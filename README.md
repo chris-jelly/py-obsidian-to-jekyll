@@ -1,4 +1,4 @@
-# Blog Publisher
+# py-obsidian-to-jekyll
 
 Convert Obsidian notes to Jekyll blog posts with automatic frontmatter transformation and link conversion.
 
@@ -18,16 +18,16 @@ Convert Obsidian notes to Jekyll blog posts with automatic frontmatter transform
 
 ```bash
 # Install in development mode
-uv add --dev --editable path/to/blog-publisher
+uv add --dev --editable path/to/py-obsidian-to-jekyll
 
 # Or install from git
-uv add --dev git+https://github.com/chris-jelly/blog-publisher.git
+uv add --dev git+https://github.com/chris-jelly/py-obsidian-to-jekyll.git
 ```
 
 ### For Local Development
 
 ```bash
-cd blog-publisher
+cd py-obsidian-to-jekyll
 uv sync
 uv run blog-publish --help
 ```
@@ -113,8 +113,8 @@ Regular markdown content continues here.
 
 ### Setup
 ```bash
-git clone https://github.com/chris-jelly/blog-publisher.git
-cd blog-publisher
+git clone https://github.com/chris-jelly/py-obsidian-to-jekyll.git
+cd py-obsidian-to-jekyll
 uv sync
 ```
 

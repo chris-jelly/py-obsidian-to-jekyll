@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "blog-publisher"
+name = "py-obsidian-to-jekyll"
 version = "0.1.0"
 description = "Convert Obsidian notes to Jekyll blog posts"
 readme = "README.md"
@@ -42,9 +42,9 @@ dev = [
 blog-publish = "blog_publisher.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/chris-jelly/blog-publisher"
-Repository = "https://github.com/chris-jelly/blog-publisher"
-Issues = "https://github.com/chris-jelly/blog-publisher/issues"
+Homepage = "https://github.com/chris-jelly/py-obsidian-to-jekyll"
+Repository = "https://github.com/chris-jelly/py-obsidian-to-jekyll"
+Issues = "https://github.com/chris-jelly/py-obsidian-to-jekyll/issues"
 
 [tool.hatch.version]
 path = "src/blog_publisher/__init__.py"
