@@ -55,7 +55,11 @@ def create_jekyll_frontmatter(
         jekyll_frontmatter['date'] = date.strftime('%Y-%m-%d %H:%M:%S %z')
     elif 'date created' in original_frontmatter:
         # Try to parse the existing date
-        jekyll_frontmatter['date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S -0400')
+        try:
+            existing_date = datetime.fromisoformat(str(original_frontmatter['date created']))
+            jekyll_frontmatter['date'] = existing_date.strftime('%Y-%m-%d %H:%M:%S -0400')
+        except (ValueError, TypeError):
+            jekyll_frontmatter['date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S -0400')
     else:
         jekyll_frontmatter['date'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S -0400')
     

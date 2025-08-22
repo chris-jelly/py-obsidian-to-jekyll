@@ -173,12 +173,11 @@ class TestCreateJekyllFrontmatter:
         result = create_jekyll_frontmatter(original, title)
         
         assert result['title'] == "Test Post"
-        # Current implementation ignores 'date created' and uses current time
+        # Should parse the 'date created' field and use it
         assert result['date'].endswith(" -0400")  # Should have timezone
-        # Verify it's a recent timestamp (within last few seconds)
+        # Verify it uses the date from frontmatter
         result_date = result['date'].split()[0]
-        today = datetime.now().strftime('%Y-%m-%d')
-        assert result_date == today
+        assert result_date == "2023-01-01"
 
 
 class TestSlugGeneration:
