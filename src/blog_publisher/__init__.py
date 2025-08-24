@@ -16,7 +16,7 @@ from .core import (
 
 __all__ = [
     "convert_obsidian_links",
-    "create_jekyll_frontmatter", 
+    "create_jekyll_frontmatter",
     "extract_frontmatter_and_content",
     "convert_post",
     "publish_posts",
