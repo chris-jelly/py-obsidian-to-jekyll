@@ -2,6 +2,7 @@
 """
 Test suite for blog_publisher.core using pytest
 """
+
 import tempfile
 import shutil
 from pathlib import Path
@@ -16,12 +17,13 @@ from blog_publisher.core import (
     create_jekyll_frontmatter,
     convert_post,
     publish_posts,
+    copy_excalidraw_assets,
 )
 
 
 class TestExtractFrontmatterAndContent:
     """Test the extract_frontmatter_and_content function."""
-    
+
     def test_valid_frontmatter(self):
         """Test extracting valid YAML frontmatter."""
         content = """---
@@ -34,27 +36,27 @@ This is the content of the post.
 """
         with patch("builtins.open", mock_open(read_data=content)):
             frontmatter, body = extract_frontmatter_and_content(Path("test.md"))
-        
+
         expected_frontmatter = {
             "title": "Test Post",
             "date": date(2023, 1, 1),  # YAML loader converts to date object
-            "tags": ["test", "blog"]
+            "tags": ["test", "blog"],
         }
         expected_body = "\nThis is the content of the post.\n"
-        
+
         assert frontmatter == expected_frontmatter
         assert body == expected_body
-    
+
     def test_no_frontmatter(self):
         """Test file without frontmatter."""
         content = "Just regular content without frontmatter."
-        
+
         with patch("builtins.open", mock_open(read_data=content)):
             frontmatter, body = extract_frontmatter_and_content(Path("test.md"))
-        
+
         assert frontmatter == {}
         assert body == content
-    
+
     def test_invalid_yaml_frontmatter(self):
         """Test file with invalid YAML frontmatter."""
         content = """---
@@ -66,10 +68,10 @@ Content here.
 """
         with patch("builtins.open", mock_open(read_data=content)):
             frontmatter, body = extract_frontmatter_and_content(Path("test.md"))
-        
+
         assert frontmatter == {}
         assert body == content
-    
+
     def test_frontmatter_without_end_marker(self):
         """Test frontmatter without closing marker."""
         content = """---
@@ -80,197 +82,334 @@ Content without proper frontmatter end.
 """
         with patch("builtins.open", mock_open(read_data=content)):
             frontmatter, body = extract_frontmatter_and_content(Path("test.md"))
-        
+
         assert frontmatter == {}
         assert body == content
 
 
 class TestConvertObsidianLinks:
     """Test the convert_obsidian_links function."""
-    
+
     def test_simple_obsidian_link(self):
         """Test converting simple Obsidian links."""
         content = "Check out [[My Other Note]] for more info."
-        result = convert_obsidian_links(content)
+        result, excalidraw_files = convert_obsidian_links(content)
         expected = "Check out `My Other Note` for more info."
         assert result == expected
-    
+        assert excalidraw_files == []
+
     def test_multiple_obsidian_links(self):
         """Test converting multiple Obsidian links."""
         content = "See [[First Note]] and [[Second Note]] for details."
-        result = convert_obsidian_links(content)
+        result, excalidraw_files = convert_obsidian_links(content)
         expected = "See `First Note` and `Second Note` for details."
         assert result == expected
-    
+        assert excalidraw_files == []
+
     def test_obsidian_link_with_spaces(self):
         """Test converting Obsidian links with spaces."""
         content = "Reference [[My Note With Spaces]] here."
-        result = convert_obsidian_links(content)
+        result, excalidraw_files = convert_obsidian_links(content)
         expected = "Reference `My Note With Spaces` here."
         assert result == expected
-    
+        assert excalidraw_files == []
+
     def test_no_obsidian_links(self):
         """Test content without Obsidian links."""
         content = "Regular markdown content with no special links."
-        result = convert_obsidian_links(content)
+        result, excalidraw_files = convert_obsidian_links(content)
         assert result == content
-    
+        assert excalidraw_files == []
+
     def test_obsidian_link_with_special_characters(self):
         """Test converting Obsidian links with special characters."""
         content = "See [[Note-with_underscores.and.dots]] for more."
-        result = convert_obsidian_links(content)
+        result, excalidraw_files = convert_obsidian_links(content)
         expected = "See `Note-with_underscores.and.dots` for more."
         assert result == expected
+        assert excalidraw_files == []
+
+
+class TestExcalidrawConversion:
+    """Test Excalidraw-specific functionality."""
+
+    def test_excalidraw_embed_conversion(self):
+        """Test converting Excalidraw embeds to image links."""
+        content = "Check out this diagram: ![[My Diagram.excalidraw]]"
+        result, excalidraw_files = convert_obsidian_links(content)
+
+        expected = "Check out this diagram: ![My Diagram](assets/My Diagram.svg)"
+        assert result == expected
+        assert len(excalidraw_files) == 1
+        assert excalidraw_files[0]["original"] == "My Diagram.excalidraw"
+        assert excalidraw_files[0]["svg_filename"] == "My Diagram.svg"
+
+    def test_excalidraw_link_conversion(self):
+        """Test converting Excalidraw links (without embed syntax) to image links."""
+        content = "See [[Architecture.excalidraw]] for the system design."
+        result, excalidraw_files = convert_obsidian_links(content)
+
+        expected = "See ![Architecture](assets/Architecture.svg) for the system design."
+        assert result == expected
+        assert len(excalidraw_files) == 1
+        assert excalidraw_files[0]["original"] == "Architecture.excalidraw"
+        assert excalidraw_files[0]["svg_filename"] == "Architecture.svg"
+
+    def test_mixed_links_and_excalidraw(self):
+        """Test content with both regular links and Excalidraw files."""
+        content = "Read [[My Notes]] and see ![[System Design.excalidraw]] for details."
+        result, excalidraw_files = convert_obsidian_links(content)
+
+        expected = "Read `My Notes` and see ![System Design](assets/System Design.svg) for details."
+        assert result == expected
+        assert len(excalidraw_files) == 1
+        assert excalidraw_files[0]["original"] == "System Design.excalidraw"
+        assert excalidraw_files[0]["svg_filename"] == "System Design.svg"
+
+    def test_multiple_excalidraw_files(self):
+        """Test content with multiple Excalidraw files."""
+        content = (
+            "See ![[Diagram1.excalidraw]] and [[Diagram2.excalidraw]] for reference."
+        )
+        result, excalidraw_files = convert_obsidian_links(content)
+
+        expected = "See ![Diagram1](assets/Diagram1.svg) and ![Diagram2](assets/Diagram2.svg) for reference."
+        assert result == expected
+        assert len(excalidraw_files) == 2
+
+        assert excalidraw_files[0]["original"] == "Diagram1.excalidraw"
+        assert excalidraw_files[0]["svg_filename"] == "Diagram1.svg"
+
+        assert excalidraw_files[1]["original"] == "Diagram2.excalidraw"
+        assert excalidraw_files[1]["svg_filename"] == "Diagram2.svg"
+
+    def test_excalidraw_with_custom_assets_path(self):
+        """Test Excalidraw conversion with custom assets directory."""
+        content = "Check out ![[My Diagram.excalidraw]] here."
+        result, excalidraw_files = convert_obsidian_links(
+            content, assets_dir="/custom/assets"
+        )
+
+        expected = "Check out ![My Diagram](/custom/assets/My Diagram.svg) here."
+        assert result == expected
+        assert len(excalidraw_files) == 1
+
+
+class TestCopyExcalidrawAssets:
+    """Test the copy_excalidraw_assets function."""
+
+    def setup_method(self):
+        """Set up test environment."""
+        self.test_dir = tempfile.mkdtemp()
+        self.source_dir = Path(self.test_dir) / "source"
+        self.assets_dir = Path(self.test_dir) / "assets"
+        self.source_dir.mkdir()
+
+    def teardown_method(self):
+        """Clean up test environment."""
+        shutil.rmtree(self.test_dir)
+
+    def test_copy_svg_from_same_directory(self):
+        """Test copying SVG file from same directory as markdown."""
+        # Create a test SVG file
+        test_svg = self.source_dir / "test-diagram.svg"
+        test_svg.write_text("<svg>test</svg>")
+
+        excalidraw_files = [
+            {"original": "test-diagram.excalidraw", "svg_filename": "test-diagram.svg"}
+        ]
+
+        copied = copy_excalidraw_assets(
+            excalidraw_files, self.source_dir, self.assets_dir
+        )
+
+        assert len(copied) == 1
+        assert copied[0] == "test-diagram.svg"
+        assert (self.assets_dir / "test-diagram.svg").exists()
+        assert (self.assets_dir / "test-diagram.svg").read_text() == "<svg>test</svg>"
+
+    def test_copy_svg_from_assets_subdirectory(self):
+        """Test copying SVG file from Blog/assets/ directory."""
+        # Create assets subdirectory and SVG file
+        blog_assets_dir = self.source_dir.parent / "assets"
+        blog_assets_dir.mkdir()
+        test_svg = blog_assets_dir / "diagram.svg"
+        test_svg.write_text("<svg>content</svg>")
+
+        excalidraw_files = [
+            {"original": "diagram.excalidraw", "svg_filename": "diagram.svg"}
+        ]
+
+        copied = copy_excalidraw_assets(
+            excalidraw_files, self.source_dir, self.assets_dir
+        )
+
+        assert len(copied) == 1
+        assert (self.assets_dir / "diagram.svg").exists()
+
+    def test_svg_file_not_found(self):
+        """Test behavior when SVG file cannot be found."""
+        excalidraw_files = [
+            {"original": "missing.excalidraw", "svg_filename": "missing.svg"}
+        ]
+
+        copied = copy_excalidraw_assets(
+            excalidraw_files, self.source_dir, self.assets_dir
+        )
+
+        assert len(copied) == 0
+        assert not (self.assets_dir / "missing.svg").exists()
 
 
 class TestCreateJekyllFrontmatter:
     """Test the create_jekyll_frontmatter function."""
-    
+
     def test_basic_frontmatter_creation(self):
         """Test creating basic Jekyll frontmatter."""
         original = {}
         title = "Test Post"
         date = datetime(2023, 1, 15, 10, 30, 0)
-        
+
         result = create_jekyll_frontmatter(original, title, date)
-        
-        assert result['title'] == "Test Post"
+
+        assert result["title"] == "Test Post"
         # Note: %z format depends on system timezone, so we check for the date/time portion
-        assert result['date'].startswith("2023-01-15 10:30:00")
-    
+        assert result["date"].startswith("2023-01-15 10:30:00")
+
     def test_frontmatter_with_categories_and_tags(self):
         """Test preserving categories and tags."""
-        original = {
-            'categories': ['tech', 'blog'],
-            'tags': ['python', 'testing']
-        }
+        original = {"categories": ["tech", "blog"], "tags": ["python", "testing"]}
         title = "Test Post"
-        
+
         result = create_jekyll_frontmatter(original, title)
-        
-        assert result['title'] == "Test Post"
-        assert result['categories'] == ['tech', 'blog']
-        assert result['tags'] == ['python', 'testing']
-        assert 'date' in result
-    
+
+        assert result["title"] == "Test Post"
+        assert result["categories"] == ["tech", "blog"]
+        assert result["tags"] == ["python", "testing"]
+        assert "date" in result
+
     def test_frontmatter_without_date(self):
         """Test frontmatter creation without provided date."""
         original = {}
         title = "Test Post"
-        
-        with patch('blog_publisher.core.datetime') as mock_datetime:
-            mock_datetime.now.return_value.strftime.return_value = "2023-01-01 12:00:00 -0400"
+
+        with patch("blog_publisher.core.datetime") as mock_datetime:
+            mock_datetime.now.return_value.strftime.return_value = (
+                "2023-01-01 12:00:00 -0400"
+            )
             result = create_jekyll_frontmatter(original, title)
-        
-        assert result['title'] == "Test Post"
-        assert result['date'] == "2023-01-01 12:00:00 -0400"
-    
+
+        assert result["title"] == "Test Post"
+        assert result["date"] == "2023-01-01 12:00:00 -0400"
+
     def test_frontmatter_with_date_created(self):
         """Test behavior when 'date created' field exists (currently uses current time)."""
-        original = {'date created': '2023-01-01'}
+        original = {"date created": "2023-01-01"}
         title = "Test Post"
-        
+
         result = create_jekyll_frontmatter(original, title)
-        
-        assert result['title'] == "Test Post"
+
+        assert result["title"] == "Test Post"
         # Should parse the 'date created' field and use it
-        assert result['date'].endswith(" -0400")  # Should have timezone
+        assert result["date"].endswith(" -0400")  # Should have timezone
         # Verify it uses the date from frontmatter
-        result_date = result['date'].split()[0]
+        result_date = result["date"].split()[0]
         assert result_date == "2023-01-01"
 
 
 class TestSlugGeneration:
     """Test slug generation behavior in convert_post function."""
-    
+
     def setup_method(self):
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
         self.ready_dir = Path(self.test_dir) / "Ready"
         self.published_dir = Path(self.test_dir) / "Published"
         self.blog_posts_dir = Path(self.test_dir) / "blog_posts"
-        
+
         self.ready_dir.mkdir()
         self.published_dir.mkdir()
         self.blog_posts_dir.mkdir()
-    
+
     def teardown_method(self):
         """Clean up test environment."""
         shutil.rmtree(self.test_dir)
-    
+
     def test_slug_with_special_characters(self):
         """Test slug generation removes special characters."""
         test_file = self.ready_dir / "test.md"
-        with open(test_file, 'w') as f:
+        with open(test_file, "w") as f:
             f.write("""---
 title: "My Post: A Guide to Python & Django!"
 ---
 
 Test content.
 """)
-        
-        with patch('blog_publisher.core.datetime') as mock_datetime:
+
+        with patch("blog_publisher.core.datetime") as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "2023-01-15"
             result = convert_post(test_file, self.published_dir, self.blog_posts_dir)
-        
+
         # Should remove special characters and convert to lowercase
         assert "my-post-a-guide-to-python-django" in result
         assert ":" not in result
         assert "&" not in result
         assert "!" not in result
-    
+
     def test_slug_with_multiple_spaces(self):
         """Test slug generation handles multiple consecutive spaces."""
         test_file = self.ready_dir / "test.md"
-        with open(test_file, 'w') as f:
+        with open(test_file, "w") as f:
             f.write("""---
 title: "My    Post   With     Spaces"
 ---
 
 Test content.
 """)
-        
-        with patch('blog_publisher.core.datetime') as mock_datetime:
+
+        with patch("blog_publisher.core.datetime") as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "2023-01-15"
             result = convert_post(test_file, self.published_dir, self.blog_posts_dir)
-        
+
         # Multiple spaces should be converted to single hyphens
         assert "my-post-with-spaces" in result
         assert "--" not in result  # No double hyphens
-    
+
     def test_slug_with_unicode_characters(self):
         """Test slug generation with unicode characters."""
         test_file = self.ready_dir / "test.md"
-        with open(test_file, 'w') as f:
+        with open(test_file, "w") as f:
             f.write("""---
 title: "Café Résumé naïve"
 ---
 
 Test content.
 """)
-        
-        with patch('blog_publisher.core.datetime') as mock_datetime:
+
+        with patch("blog_publisher.core.datetime") as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "2023-01-15"
             result = convert_post(test_file, self.published_dir, self.blog_posts_dir)
-        
+
         # Unicode characters should be removed, leaving basic words
-        assert "caf-rsum-nave" in result.lower() or "cafe-resume-naive" in result.lower()
-    
+        assert (
+            "caf-rsum-nave" in result.lower() or "cafe-resume-naive" in result.lower()
+        )
+
     def test_slug_with_numbers_and_hyphens(self):
         """Test slug generation preserves numbers and existing hyphens."""
         test_file = self.ready_dir / "test.md"
-        with open(test_file, 'w') as f:
+        with open(test_file, "w") as f:
             f.write("""---
 title: "Python 3.9 - Best Practices 2023"
 ---
 
 Test content.
 """)
-        
-        with patch('blog_publisher.core.datetime') as mock_datetime:
+
+        with patch("blog_publisher.core.datetime") as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "2023-01-15"
             result = convert_post(test_file, self.published_dir, self.blog_posts_dir)
-        
+
         # Numbers should be preserved, periods removed, may have multiple hyphens
         assert "python-39" in result  # Period in 3.9 gets removed
         assert "best-practices-2023" in result
@@ -280,21 +419,21 @@ Test content.
 
 class TestConvertPost:
     """Test the convert_post function."""
-    
+
     def setup_method(self):
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
         self.ready_dir = Path(self.test_dir) / "Ready"
         self.published_dir = Path(self.test_dir) / "Published"
         self.blog_posts_dir = Path(self.test_dir) / "blog_posts"
-        
+
         self.ready_dir.mkdir()
         self.published_dir.mkdir()
         self.blog_posts_dir.mkdir()
-        
+
         # Create a test file
         self.test_file = self.ready_dir / "test-post.md"
-        with open(self.test_file, 'w') as f:
+        with open(self.test_file, "w") as f:
             f.write("""---
 title: Test Post Title
 categories: [tech]
@@ -303,26 +442,28 @@ tags: [python, testing]
 
 This is a test post with [[Internal Link]] and regular content.
 """)
-    
+
     def teardown_method(self):
         """Clean up test environment."""
         shutil.rmtree(self.test_dir)
-    
+
     def test_convert_post_success(self):
         """Test successful post conversion."""
-        with patch('blog_publisher.core.datetime') as mock_datetime:
+        with patch("blog_publisher.core.datetime") as mock_datetime:
             mock_datetime.now.return_value.strftime.return_value = "2023-01-15"
             mock_datetime.now.return_value.strftime.side_effect = lambda fmt: {
-                '%Y-%m-%d': '2023-01-15',
-                '%Y-%m-%d %H:%M:%S -0400': '2023-01-15 12:00:00 -0400'
+                "%Y-%m-%d": "2023-01-15",
+                "%Y-%m-%d %H:%M:%S -0400": "2023-01-15 12:00:00 -0400",
             }[fmt]
-            
-            result = convert_post(self.test_file, self.published_dir, self.blog_posts_dir)
-        
+
+            result = convert_post(
+                self.test_file, self.published_dir, self.blog_posts_dir
+            )
+
         assert isinstance(result, str)
         assert result.startswith("2023-01-15-")
         assert result.endswith(".md")
-        
+
         # Check files were created
         assert (self.published_dir / result).exists()
         assert (self.blog_posts_dir / result).exists()
@@ -330,37 +471,37 @@ This is a test post with [[Internal Link]] and regular content.
 
 class TestPublishPosts:
     """Test the publish_posts function."""
-    
+
     def setup_method(self):
         """Set up test environment."""
         self.test_dir = tempfile.mkdtemp()
         self.ready_dir = Path(self.test_dir) / "Ready"
         self.published_dir = Path(self.test_dir) / "Published"
         self.blog_posts_dir = Path(self.test_dir) / "blog_posts"
-        
+
         self.ready_dir.mkdir()
         self.blog_posts_dir.mkdir()
-    
+
     def teardown_method(self):
         """Clean up test environment."""
         shutil.rmtree(self.test_dir)
-    
+
     def test_publish_posts_no_ready_files(self):
         """Test publish_posts with no files to process."""
         result = publish_posts(self.ready_dir, self.published_dir, self.blog_posts_dir)
         assert result == []
-    
+
     def test_publish_posts_ready_dir_not_exists(self):
         """Test publish_posts when Ready directory doesn't exist."""
         non_existent_dir = Path(self.test_dir) / "NonExistent"
-        
+
         with pytest.raises(FileNotFoundError, match="Ready directory not found"):
             publish_posts(non_existent_dir, self.published_dir, self.blog_posts_dir)
-    
+
     def test_publish_posts_blog_dir_not_exists(self):
         """Test publish_posts when blog posts directory doesn't exist."""
         non_existent_dir = Path(self.test_dir) / "NonExistent"
-        
+
         with pytest.raises(FileNotFoundError, match="Blog posts directory not found"):
             publish_posts(self.ready_dir, self.published_dir, non_existent_dir)
 
@@ -370,18 +511,18 @@ class TestPublishPosts:
 def temp_blog_env(tmp_path):
     """Create a temporary blog environment for testing."""
     ready_dir = tmp_path / "Ready"
-    published_dir = tmp_path / "Published" 
+    published_dir = tmp_path / "Published"
     blog_posts_dir = tmp_path / "blog_posts"
-    
+
     ready_dir.mkdir()
     published_dir.mkdir()
     blog_posts_dir.mkdir()
-    
+
     return {
-        'ready_dir': ready_dir,
-        'published_dir': published_dir,
-        'blog_posts_dir': blog_posts_dir,
-        'temp_dir': tmp_path
+        "ready_dir": ready_dir,
+        "published_dir": published_dir,
+        "blog_posts_dir": blog_posts_dir,
+        "temp_dir": tmp_path,
     }
 
 
@@ -400,30 +541,30 @@ This is a sample post for integration testing.
 
 It contains [[Internal Links]] that should be converted.
 """
-    post_file = temp_blog_env['ready_dir'] / "integration-test.md"
+    post_file = temp_blog_env["ready_dir"] / "integration-test.md"
     post_file.write_text(post_content)
     return post_file
 
 
 class TestIntegration:
     """Integration tests using real file operations."""
-    
+
     def test_end_to_end_conversion(self, temp_blog_env, sample_post_file):
         """Test complete post conversion process."""
         result = convert_post(
             sample_post_file,
-            temp_blog_env['published_dir'],
-            temp_blog_env['blog_posts_dir']
+            temp_blog_env["published_dir"],
+            temp_blog_env["blog_posts_dir"],
         )
-        
+
         # Check that files were created
-        published_files = list(temp_blog_env['published_dir'].glob("*.md"))
-        blog_files = list(temp_blog_env['blog_posts_dir'].glob("*.md"))
-        
+        published_files = list(temp_blog_env["published_dir"].glob("*.md"))
+        blog_files = list(temp_blog_env["blog_posts_dir"].glob("*.md"))
+
         assert len(published_files) == 1
         assert len(blog_files) == 1
         assert published_files[0].name == result
-        
+
         # Check content transformation
         published_content = published_files[0].read_text()
         assert "title: Integration Test Post" in published_content
