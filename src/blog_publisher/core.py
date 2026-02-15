@@ -7,7 +7,8 @@ import re
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
+
 import yaml
 
 
@@ -81,7 +82,7 @@ def build_post_registry(posts_dir: Path, ready_files: list[Path]) -> dict[str, s
 
 def extract_frontmatter_and_content(file_path: Path) -> tuple[dict[str, Any], str]:
     """Extract YAML frontmatter and content from a markdown file."""
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, encoding="utf-8") as f:
         content = f.read()
 
     # Check if file starts with frontmatter
@@ -103,7 +104,7 @@ def extract_frontmatter_and_content(file_path: Path) -> tuple[dict[str, Any], st
 
 def _resolve_svg_embed(
     link_text: str, is_embed: bool, svg_files_to_copy: list[dict]
-) -> Optional[str]:
+) -> str | None:
     """Resolve SVG and Excalidraw embeds.
 
     Args:
@@ -147,7 +148,7 @@ def _resolve_svg_embed(
 
 def _resolve_cross_post_link(
     link_text: str, is_embed: bool, registry: dict[str, str]
-) -> Optional[str]:
+) -> str | None:
     """Resolve cross-post links using the post registry.
 
     Args:
@@ -237,9 +238,9 @@ def _restore_code_blocks(content: str, code_blocks: list[str]) -> str:
 
 def convert_obsidian_links(
     content: str,
-    registry: Optional[dict[str, str]] = None,
+    registry: dict[str, str] | None = None,
     post_title: str = "Unknown",
-    assets_dir: Optional[str] = None,
+    assets_dir: str | None = None,
 ) -> tuple[str, list[dict]]:
     """Convert Obsidian [[links]] using priority-ordered resolution pipeline.
 
@@ -295,7 +296,7 @@ def copy_excalidraw_assets(
     excalidraw_files: list[dict],
     source_dir: Path,
     assets_dir: Path,
-    svg_dir: Optional[Path] = None,
+    svg_dir: Path | None = None,
 ) -> list[str]:
     """Copy SVG and Excalidraw files to the blog assets directory.
 
@@ -371,7 +372,7 @@ def copy_excalidraw_assets(
 
 
 def create_jekyll_frontmatter(
-    original_frontmatter: dict[str, Any], title: str, date: Optional[datetime] = None
+    original_frontmatter: dict[str, Any], title: str, date: datetime | None = None
 ) -> dict[str, Any]:
     """Create Jekyll-compatible frontmatter."""
     jekyll_frontmatter = {}
@@ -412,9 +413,9 @@ def convert_post(
     ready_file: Path,
     published_dir: Path,
     blog_posts_dir: Path,
-    blog_assets_dir: Optional[Path] = None,
-    svg_dir: Optional[Path] = None,
-    registry: Optional[dict[str, str]] = None,
+    blog_assets_dir: Path | None = None,
+    svg_dir: Path | None = None,
+    registry: dict[str, str] | None = None,
 ) -> str:
     """Convert a single post from Ready/ to Jekyll format."""
     print(f"Converting: {ready_file.name}")
@@ -473,8 +474,8 @@ def publish_posts(
     ready_dir: Path,
     published_dir: Path,
     blog_posts_dir: Path,
-    blog_assets_dir: Optional[Path] = None,
-    svg_dir: Optional[Path] = None,
+    blog_assets_dir: Path | None = None,
+    svg_dir: Path | None = None,
 ) -> list[str]:
     """Process all posts in Ready/ directory."""
     # Ensure directories exist
