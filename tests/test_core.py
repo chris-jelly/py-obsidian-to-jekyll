@@ -18,7 +18,163 @@ from blog_publisher.core import (
     convert_post,
     publish_posts,
     copy_excalidraw_assets,
+    generate_slug,
+    build_post_registry,
 )
+
+
+class TestGenerateSlug:
+    """Test the generate_slug function."""
+
+    def test_standard_title(self):
+        """Test slug generation for a standard title."""
+        assert (
+            generate_slug("Part 1 - Airflow on K8s Introduction")
+            == "part-1---airflow-on-k8s-introduction"
+        )
+
+    def test_special_characters_removed(self):
+        """Test that special characters are removed from slug."""
+        assert (
+            generate_slug("Test & Post! With @ Special.Chars")
+            == "test-post-with-specialchars"
+        )
+
+    def test_consecutive_spaces(self):
+        """Test that consecutive spaces are collapsed to single hyphen."""
+        assert generate_slug("Multiple   Spaces   Here") == "multiple-spaces-here"
+
+    def test_unicode_characters(self):
+        """Test handling of unicode characters."""
+        assert generate_slug("Café and Résumé") == "caf-and-rsum"
+
+    def test_empty_input(self):
+        """Test handling of empty string."""
+        assert generate_slug("") == ""
+
+    def test_only_special_characters(self):
+        """Test handling of string with only special characters."""
+        assert generate_slug("!@#$%^&*()") == ""
+
+    def test_leading_trailing_spaces(self):
+        """Test that leading and trailing spaces are trimmed."""
+        assert generate_slug("  Trimmed Title  ") == "trimmed-title"
+
+
+class TestBuildPostRegistry:
+    """Test the build_post_registry function."""
+
+    def test_registry_from_posts_dir(self):
+        """Test building registry from existing blog posts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            posts_dir = Path(tmpdir) / "_posts"
+            posts_dir.mkdir()
+
+            # Create a test post
+            post_content = """---
+title: My First Post
+date: 2023-01-01
+---
+
+Content here.
+"""
+            post_file = posts_dir / "2023-01-01-my-first-post.md"
+            post_file.write_text(post_content)
+
+            registry = build_post_registry(posts_dir, [])
+
+            assert "my first post" in registry
+            assert registry["my first post"] == "my-first-post"
+
+    def test_registry_includes_ready_batch(self):
+        """Test that Ready/ batch files are included in registry."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ready_dir = Path(tmpdir) / "ready"
+            ready_dir.mkdir()
+
+            ready_content = """---
+title: Draft Post
+---
+
+Draft content.
+"""
+            ready_file = ready_dir / "draft.md"
+            ready_file.write_text(ready_content)
+
+            registry = build_post_registry(Path(tmpdir) / "_posts", [ready_file])
+
+            assert "draft post" in registry
+            assert registry["draft post"] == "draft-post"
+
+    def test_missing_title_frontmatter(self):
+        """Test that files without title frontmatter are skipped."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            posts_dir = Path(tmpdir) / "_posts"
+            posts_dir.mkdir()
+
+            # Post without title
+            post_content = """---
+date: 2023-01-01
+tags: [test]
+---
+
+Content.
+"""
+            post_file = posts_dir / "2023-01-01-no-title.md"
+            post_file.write_text(post_content)
+
+            registry = build_post_registry(posts_dir, [])
+
+            assert len(registry) == 0
+
+    def test_duplicate_titles(self):
+        """Test that duplicate titles result in last one winning."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            posts_dir = Path(tmpdir) / "_posts"
+            posts_dir.mkdir()
+
+            # Create two posts with same title
+            post1 = posts_dir / "2023-01-01-duplicate.md"
+            post1.write_text("---\ntitle: Duplicate Title\n---\nContent 1.")
+
+            post2 = posts_dir / "2023-01-02-duplicate.md"
+            post2.write_text("---\ntitle: Duplicate Title\n---\nContent 2.")
+
+            registry = build_post_registry(posts_dir, [])
+
+            # Should have exactly one entry
+            assert len(registry) == 1
+            assert "duplicate title" in registry
+
+    def test_empty_directory(self):
+        """Test handling of empty _posts directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            posts_dir = Path(tmpdir) / "_posts"
+            posts_dir.mkdir()
+
+            registry = build_post_registry(posts_dir, [])
+
+            assert registry == {}
+
+    def test_case_insensitive_matching(self):
+        """Test that registry uses lowercase keys."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            posts_dir = Path(tmpdir) / "_posts"
+            posts_dir.mkdir()
+
+            post_content = """---
+title: My Capitalized Title
+---
+
+Content.
+"""
+            post_file = posts_dir / "test.md"
+            post_file.write_text(post_content)
+
+            registry = build_post_registry(posts_dir, [])
+
+            assert "my capitalized title" in registry
+            assert "My Capitalized Title" not in registry
 
 
 class TestExtractFrontmatterAndContent:
@@ -90,109 +246,105 @@ Content without proper frontmatter end.
 class TestConvertObsidianLinks:
     """Test the convert_obsidian_links function."""
 
-    def test_simple_obsidian_link(self):
-        """Test converting simple Obsidian links."""
+    def test_simple_obsidian_link_unresolved(self):
+        """Test converting simple unresolved Obsidian links to plain text."""
         content = "Check out [[My Other Note]] for more info."
-        result, excalidraw_files = convert_obsidian_links(content)
-        expected = "Check out `My Other Note` for more info."
+        result, svg_files = convert_obsidian_links(content)
+        expected = "Check out My Other Note for more info."
         assert result == expected
-        assert excalidraw_files == []
+        assert svg_files == []
 
-    def test_multiple_obsidian_links(self):
-        """Test converting multiple Obsidian links."""
+    def test_multiple_obsidian_links_unresolved(self):
+        """Test converting multiple unresolved Obsidian links."""
         content = "See [[First Note]] and [[Second Note]] for details."
-        result, excalidraw_files = convert_obsidian_links(content)
-        expected = "See `First Note` and `Second Note` for details."
+        result, svg_files = convert_obsidian_links(content)
+        expected = "See First Note and Second Note for details."
         assert result == expected
-        assert excalidraw_files == []
+        assert svg_files == []
 
     def test_obsidian_link_with_spaces(self):
         """Test converting Obsidian links with spaces."""
         content = "Reference [[My Note With Spaces]] here."
-        result, excalidraw_files = convert_obsidian_links(content)
-        expected = "Reference `My Note With Spaces` here."
+        result, svg_files = convert_obsidian_links(content)
+        expected = "Reference My Note With Spaces here."
         assert result == expected
-        assert excalidraw_files == []
+        assert svg_files == []
 
     def test_no_obsidian_links(self):
         """Test content without Obsidian links."""
         content = "Regular markdown content with no special links."
-        result, excalidraw_files = convert_obsidian_links(content)
+        result, svg_files = convert_obsidian_links(content)
         assert result == content
-        assert excalidraw_files == []
+        assert svg_files == []
 
     def test_obsidian_link_with_special_characters(self):
         """Test converting Obsidian links with special characters."""
         content = "See [[Note-with_underscores.and.dots]] for more."
-        result, excalidraw_files = convert_obsidian_links(content)
-        expected = "See `Note-with_underscores.and.dots` for more."
+        result, svg_files = convert_obsidian_links(content)
+        expected = "See Note-with_underscores.and.dots for more."
         assert result == expected
-        assert excalidraw_files == []
+        assert svg_files == []
+
+    def test_obsidian_link_with_registry_match(self):
+        """Test cross-post link resolution with registry."""
+        content = "See [[My First Post]] for background."
+        registry = {"my first post": "my-first-post"}
+        result, svg_files = convert_obsidian_links(content, registry=registry)
+        expected = "See [My First Post](/posts/my-first-post/) for background."
+        assert result == expected
+        assert svg_files == []
 
 
 class TestExcalidrawConversion:
-    """Test Excalidraw-specific functionality."""
+    """Test SVG and Excalidraw embed functionality."""
 
     def test_excalidraw_embed_conversion(self):
-        """Test converting Excalidraw embeds to image links."""
+        """Test converting Excalidraw embeds to image links with absolute paths."""
         content = "Check out this diagram: ![[My Diagram.excalidraw]]"
-        result, excalidraw_files = convert_obsidian_links(content)
+        result, svg_files = convert_obsidian_links(content)
 
-        expected = "Check out this diagram: ![My Diagram](assets/My Diagram.svg)"
+        expected = "Check out this diagram: ![My Diagram](/assets/My Diagram.svg)"
         assert result == expected
-        assert len(excalidraw_files) == 1
-        assert excalidraw_files[0]["original"] == "My Diagram.excalidraw"
-        assert excalidraw_files[0]["svg_filename"] == "My Diagram.svg"
+        assert len(svg_files) == 1
+        assert svg_files[0]["original"] == "My Diagram.excalidraw"
+        assert svg_files[0]["svg_filename"] == "My Diagram.svg"
 
-    def test_excalidraw_link_conversion(self):
-        """Test converting Excalidraw links (without embed syntax) to image links."""
-        content = "See [[Architecture.excalidraw]] for the system design."
-        result, excalidraw_files = convert_obsidian_links(content)
+    def test_svg_embed_conversion(self):
+        """Test converting direct SVG embeds."""
+        content = "See the diagram: ![[diagram.svg]]"
+        result, svg_files = convert_obsidian_links(content)
 
-        expected = "See ![Architecture](assets/Architecture.svg) for the system design."
+        expected = "See the diagram: ![diagram](/assets/diagram.svg)"
         assert result == expected
-        assert len(excalidraw_files) == 1
-        assert excalidraw_files[0]["original"] == "Architecture.excalidraw"
-        assert excalidraw_files[0]["svg_filename"] == "Architecture.svg"
+        assert len(svg_files) == 1
+        assert svg_files[0]["original"] == "diagram.svg"
+        assert svg_files[0]["svg_filename"] == "diagram.svg"
 
-    def test_mixed_links_and_excalidraw(self):
-        """Test content with both regular links and Excalidraw files."""
+    def test_mixed_links_and_svg(self):
+        """Test content with both regular links and SVG embeds."""
         content = "Read [[My Notes]] and see ![[System Design.excalidraw]] for details."
-        result, excalidraw_files = convert_obsidian_links(content)
+        result, svg_files = convert_obsidian_links(content)
 
-        expected = "Read `My Notes` and see ![System Design](assets/System Design.svg) for details."
+        expected = "Read My Notes and see ![System Design](/assets/System Design.svg) for details."
         assert result == expected
-        assert len(excalidraw_files) == 1
-        assert excalidraw_files[0]["original"] == "System Design.excalidraw"
-        assert excalidraw_files[0]["svg_filename"] == "System Design.svg"
+        assert len(svg_files) == 1
+        assert svg_files[0]["original"] == "System Design.excalidraw"
+        assert svg_files[0]["svg_filename"] == "System Design.svg"
 
-    def test_multiple_excalidraw_files(self):
-        """Test content with multiple Excalidraw files."""
-        content = (
-            "See ![[Diagram1.excalidraw]] and [[Diagram2.excalidraw]] for reference."
-        )
-        result, excalidraw_files = convert_obsidian_links(content)
+    def test_multiple_svg_files(self):
+        """Test content with multiple SVG embeds."""
+        content = "See ![[Diagram1.excalidraw]] and ![[diagram2.svg]] for reference."
+        result, svg_files = convert_obsidian_links(content)
 
-        expected = "See ![Diagram1](assets/Diagram1.svg) and ![Diagram2](assets/Diagram2.svg) for reference."
+        expected = "See ![Diagram1](/assets/Diagram1.svg) and ![diagram2](/assets/diagram2.svg) for reference."
         assert result == expected
-        assert len(excalidraw_files) == 2
+        assert len(svg_files) == 2
 
-        assert excalidraw_files[0]["original"] == "Diagram1.excalidraw"
-        assert excalidraw_files[0]["svg_filename"] == "Diagram1.svg"
+        assert svg_files[0]["original"] == "Diagram1.excalidraw"
+        assert svg_files[0]["svg_filename"] == "Diagram1.svg"
 
-        assert excalidraw_files[1]["original"] == "Diagram2.excalidraw"
-        assert excalidraw_files[1]["svg_filename"] == "Diagram2.svg"
-
-    def test_excalidraw_with_custom_assets_path(self):
-        """Test Excalidraw conversion with custom assets directory."""
-        content = "Check out ![[My Diagram.excalidraw]] here."
-        result, excalidraw_files = convert_obsidian_links(
-            content, assets_dir="/custom/assets"
-        )
-
-        expected = "Check out ![My Diagram](/custom/assets/My Diagram.svg) here."
-        assert result == expected
-        assert len(excalidraw_files) == 1
+        assert svg_files[1]["original"] == "diagram2.svg"
+        assert svg_files[1]["svg_filename"] == "diagram2.svg"
 
 
 class TestCopyExcalidrawAssets:
@@ -568,5 +720,325 @@ class TestIntegration:
         # Check content transformation
         published_content = published_files[0].read_text()
         assert "title: Integration Test Post" in published_content
-        assert "`Internal Links`" in published_content
+        # With new behavior, unresolved links become plain text (not backticks)
+        assert "Internal Links" in published_content
         assert "[[Internal Links]]" not in published_content
+
+
+class TestCrossPostLinking:
+    """Test cross-post link resolution functionality."""
+
+    def test_exact_title_match(self):
+        """Test cross-post linking with exact title match."""
+        content = "See [[Part 1 - Airflow on K8s Introduction]] for more."
+        registry = {
+            "part 1 - airflow on k8s introduction": "part-1---airflow-on-k8s-introduction"
+        }
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        expected = "See [Part 1 - Airflow on K8s Introduction](/posts/part-1---airflow-on-k8s-introduction/) for more."
+        assert result == expected
+
+    def test_case_insensitive_matching(self):
+        """Test that cross-post matching is case-insensitive."""
+        content = "Read [[my post title]] for details."
+        registry = {"my post title": "my-post-title"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        expected = "Read [my post title](/posts/my-post-title/) for details."
+        assert result == expected
+
+    def test_slug_generation_consistency(self):
+        """Test that slug generation is consistent between registry and links."""
+        # Build a registry entry
+        registry = {"test post": generate_slug("Test Post")}
+
+        content = "See [[Test Post]] for info."
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        expected = "See [Test Post](/posts/test-post/) for info."
+        assert result == expected
+
+    def test_no_match_in_registry(self):
+        """Test that unmatched links fall back to plain text."""
+        content = "See [[Unknown Post]] for details."
+        registry = {"known post": "known-post"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        expected = "See Unknown Post for details."
+        assert result == expected
+
+
+class TestVaultLinkFallback:
+    """Test vault-only link fallback behavior."""
+
+    def test_plain_text_output(self):
+        """Test that unresolved links become plain text."""
+        content = "Check [[Concept Diagram]] for understanding."
+        result, _ = convert_obsidian_links(content)
+
+        expected = "Check Concept Diagram for understanding."
+        assert result == expected
+
+    def test_special_characters_preserved(self):
+        """Test that special characters are preserved in plain text."""
+        content = "See [[My Note (Draft)]] for more."
+        result, _ = convert_obsidian_links(content)
+
+        expected = "See My Note (Draft) for more."
+        assert result == expected
+
+    def test_multiple_unresolved_links(self):
+        """Test multiple unresolved links in one post."""
+        content = "Read [[Note A]] and [[Note B]] for context."
+        result, _ = convert_obsidian_links(content)
+
+        expected = "Read Note A and Note B for context."
+        assert result == expected
+
+    def test_warning_emission(self, caplog):
+        """Test that warnings are emitted for unresolved links."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        content = "See [[Kubernetes]] for info."
+        convert_obsidian_links(content, post_title="My Blog Post")
+
+        assert "unresolved link [[Kubernetes]]" in caplog.text
+        assert 'in "My Blog Post"' in caplog.text
+        assert "converted to plain text" in caplog.text
+
+    def test_no_warning_for_resolved_links(self, caplog):
+        """Test that no warnings are emitted for resolved links."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        content = "See [[Known Post]] for details."
+        registry = {"known post": "known-post"}
+        convert_obsidian_links(content, registry=registry, post_title="Test Post")
+
+        # Should not have any warnings about unresolved links
+        assert "unresolved link" not in caplog.text
+
+
+class TestLinkResolutionPipeline:
+    """Test the priority-ordered link resolution pipeline."""
+
+    def test_svg_takes_priority_over_cross_post(self):
+        """Test that SVG embed resolver takes priority."""
+        content = "See ![[diagram.svg]] for the architecture."
+        # Even if there's a post titled "diagram.svg", the SVG resolver wins
+        registry = {"diagram.svg": "diagram-svg"}
+        result, svg_files = convert_obsidian_links(content, registry=registry)
+
+        expected = "See ![diagram](/assets/diagram.svg) for the architecture."
+        assert result == expected
+        assert len(svg_files) == 1
+
+    def test_cross_post_takes_priority_over_fallback(self):
+        """Test that cross-post resolver takes priority over fallback."""
+        content = "Read [[My Post Title]] for background."
+        registry = {"my post title": "my-post-title"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        # Should be a hyperlink, not plain text
+        expected = "Read [My Post Title](/posts/my-post-title/) for background."
+        assert result == expected
+
+    def test_fallback_when_no_match(self):
+        """Test that fallback handles unmatched links."""
+        content = "See [[Random Note]] for info."
+        registry = {"other post": "other-post"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        expected = "See Random Note for info."
+        assert result == expected
+
+    def test_embed_vs_link_routing(self):
+        """Test that embed syntax routes to SVG, link syntax to cross-post."""
+        content = "See ![[file.svg]] and [[Post Title]] for details."
+        registry = {"post title": "post-title"}
+        result, svg_files = convert_obsidian_links(content, registry=registry)
+
+        expected = "See ![file](/assets/file.svg) and [Post Title](/posts/post-title/) for details."
+        assert result == expected
+        assert len(svg_files) == 1
+
+    def test_code_block_exclusion_fenced(self):
+        """Test that wikilinks in fenced code blocks are not processed."""
+        content = """Regular [[link]] here.
+
+```python
+# This [[link]] should not be converted
+x = "[[another link]]"
+```
+
+Another [[link]] here."""
+
+        registry = {"link": "link"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        # Links outside code blocks should be resolved
+        assert "[link](/posts/link/)" in result
+        # Links inside code blocks should remain unchanged
+        assert "# This [[link]] should not be converted" in result
+
+    def test_code_block_exclusion_inline(self):
+        """Test that wikilinks in inline code are not processed."""
+        content = "Regular [[link]] and inline `[[code link]]` here."
+        registry = {"link": "link"}
+        result, _ = convert_obsidian_links(content, registry=registry)
+
+        # Regular link should be resolved
+        assert "[link](/posts/link/)" in result
+        # Inline code link should remain unchanged
+        assert "`[[code link]]`" in result
+
+
+class TestSVGHandling:
+    """Test SVG file handling enhancements."""
+
+    def test_svg_search_order(self):
+        """Test that SVG files are searched in the correct priority order."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create directories
+            svg_dir = Path(tmpdir) / "svg"
+            source_dir = Path(tmpdir) / "source"
+            assets_dir = Path(tmpdir) / "assets"
+
+            svg_dir.mkdir()
+            source_dir.mkdir()
+            assets_dir.mkdir()
+
+            # Create SVG file in svg_dir (highest priority)
+            (svg_dir / "test.svg").write_text("<svg>from svg_dir</svg>")
+            (source_dir / "test.svg").write_text("<svg>from source_dir</svg>")
+
+            svg_files = [{"original": "test.svg", "svg_filename": "test.svg"}]
+
+            result = copy_excalidraw_assets(svg_files, source_dir, assets_dir, svg_dir)
+
+            assert len(result) == 1
+            # Should have copied from svg_dir (highest priority)
+            assert (assets_dir / "test.svg").read_text() == "<svg>from svg_dir</svg>"
+
+    def test_excalidraw_svg_pattern(self):
+        """Test support for .excalidraw.svg naming pattern."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir) / "source"
+            assets_dir = Path(tmpdir) / "assets"
+
+            source_dir.mkdir()
+            assets_dir.mkdir()
+
+            # Create a file with .excalidraw.svg extension
+            (source_dir / "diagram.excalidraw.svg").write_text(
+                "<svg>excalidraw diagram</svg>"
+            )
+
+            # Simulating ![[diagram.excalidraw]] which should find diagram.excalidraw.svg
+            svg_files = [
+                {
+                    "original": "diagram.excalidraw",
+                    "svg_filename": "diagram.svg",
+                    "base_name": "diagram",
+                }
+            ]
+
+            result = copy_excalidraw_assets(svg_files, source_dir, assets_dir)
+
+            assert len(result) == 1
+            # Should have found and copied the .excalidraw.svg file
+            assert (assets_dir / "diagram.excalidraw.svg").exists()
+
+    def test_missing_file_warning(self, capsys):
+        """Test that warnings are emitted for missing SVG files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source_dir = Path(tmpdir) / "source"
+            assets_dir = Path(tmpdir) / "assets"
+
+            source_dir.mkdir()
+            assets_dir.mkdir()
+
+            svg_files = [{"original": "missing.svg", "svg_filename": "missing.svg"}]
+
+            result = copy_excalidraw_assets(svg_files, source_dir, assets_dir)
+
+            assert len(result) == 0
+            captured = capsys.readouterr()
+            assert "SVG not found" in captured.out
+            assert "missing.svg" in captured.out
+
+
+class TestMultiPostIntegration:
+    """Integration test for multi-post batch with cross-references."""
+
+    def test_multi_post_cross_references_and_svgs(self):
+        """Test publishing multiple posts with cross-references and SVG embeds."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ready_dir = Path(tmpdir) / "Ready"
+            published_dir = Path(tmpdir) / "Published"
+            blog_posts_dir = Path(tmpdir) / "_posts"
+            blog_assets_dir = Path(tmpdir) / "assets"
+            svg_dir = Path(tmpdir) / "svg"
+
+            ready_dir.mkdir()
+            blog_posts_dir.mkdir()
+            blog_assets_dir.mkdir()
+            svg_dir.mkdir()
+
+            # Create SVG file
+            (svg_dir / "architecture.svg").write_text("<svg>test</svg>")
+
+            # Create first post
+            post1_content = """---
+title: Introduction to the System
+---
+
+This is the introduction. See ![[architecture.svg]] for an overview."""
+            (ready_dir / "intro.md").write_text(post1_content)
+
+            # Create second post that references the first
+            post2_content = """---
+title: Deep Dive
+---
+
+Building on [[Introduction to the System]], let's explore more details."""
+            (ready_dir / "deep-dive.md").write_text(post2_content)
+
+            # Publish the posts
+            with patch("blog_publisher.core.datetime") as mock_datetime:
+                mock_datetime.now.return_value.strftime.side_effect = lambda fmt: {
+                    "%Y-%m-%d": "2024-01-15",
+                    "%Y-%m-%d %H:%M:%S -0400": "2024-01-15 12:00:00 -0400",
+                }[fmt]
+
+                result = publish_posts(
+                    ready_dir, published_dir, blog_posts_dir, blog_assets_dir, svg_dir
+                )
+
+            assert len(result) == 2
+
+            # Check that SVG was copied
+            assert (blog_assets_dir / "architecture.svg").exists()
+
+            # Read the published posts
+            deep_dive_file = published_dir / "2024-01-15-deep-dive.md"
+            assert deep_dive_file.exists()
+
+            deep_dive_content = deep_dive_file.read_text()
+
+            # Verify cross-post link was resolved
+            assert (
+                "[Introduction to the System](/posts/introduction-to-the-system/)"
+                in deep_dive_content
+            )
+
+            # Read the intro post to verify SVG embed
+            intro_file = published_dir / "2024-01-15-introduction-to-the-system.md"
+            intro_content = intro_file.read_text()
+
+            # Verify SVG embed with absolute path
+            assert "![architecture](/assets/architecture.svg)" in intro_content

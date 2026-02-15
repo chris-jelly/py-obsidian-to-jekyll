@@ -33,6 +33,11 @@ from .core import publish_posts
     help="Blog repository assets directory for Excalidraw SVGs",
 )
 @click.option(
+    "--svg-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Directory containing SVG source files (Excalidraw directory)",
+)
+@click.option(
     "--config-file",
     type=click.Path(exists=True, path_type=Path),
     help="Configuration file with default paths",
@@ -42,17 +47,25 @@ def main(
     published_dir: Optional[Path],
     blog_dir: Optional[Path],
     assets_dir: Optional[Path],
+    svg_dir: Optional[Path],
     config_file: Optional[Path],
 ) -> None:
     """Convert Obsidian notes to Jekyll blog posts."""
 
     # Try to detect default paths if not provided
-    if not ready_dir or not published_dir or not blog_dir or not assets_dir:
+    if (
+        not ready_dir
+        or not published_dir
+        or not blog_dir
+        or not assets_dir
+        or not svg_dir
+    ):
         defaults = detect_default_paths()
         ready_dir = ready_dir or defaults.get("ready_dir")
         published_dir = published_dir or defaults.get("published_dir")
         blog_dir = blog_dir or defaults.get("blog_dir")
         assets_dir = assets_dir or defaults.get("assets_dir")
+        svg_dir = svg_dir or defaults.get("svg_dir")
 
     # Validate required paths
     if not ready_dir:
@@ -77,11 +90,15 @@ def main(
         sys.exit(1)
 
     try:
-        published_files = publish_posts(ready_dir, published_dir, blog_dir, assets_dir)
+        published_files = publish_posts(
+            ready_dir, published_dir, blog_dir, assets_dir, svg_dir
+        )
         if published_files:
             click.echo(f"\n✅ Successfully published {len(published_files)} post(s)!")
             if assets_dir:
                 click.echo(f"📁 Assets directory: {assets_dir}")
+            if svg_dir:
+                click.echo(f"🎨 SVG source directory: {svg_dir}")
         else:
             click.echo("ℹ️  No posts found to publish.")
     except Exception as e:
@@ -94,17 +111,25 @@ def detect_default_paths() -> dict[str, Optional[Path]]:
     cwd = Path.cwd()
 
     # Look for jelly-brain structure
-    potential_paths = {
+    potential_paths: dict[str, Optional[Path]] = {
         "ready_dir": None,
         "published_dir": None,
         "blog_dir": None,
         "assets_dir": None,
+        "svg_dir": None,
     }
 
     # Check if we're in jelly-brain repo
     if (cwd / "Blog" / "Ready").exists():
         potential_paths["ready_dir"] = cwd / "Blog" / "Ready"
         potential_paths["published_dir"] = cwd / "Blog" / "Published"
+
+        # Auto-detect Excalidraw/ directory at vault root
+        # Vault root is the parent of the Ready/ directory's parent
+        vault_root = cwd
+        excalidraw_dir = vault_root / "Excalidraw"
+        if excalidraw_dir.exists():
+            potential_paths["svg_dir"] = excalidraw_dir
 
     # Look for blog repo (chris-jelly.github.io)
     blog_repo_paths = [

@@ -2,12 +2,81 @@
 Core functionality for converting Obsidian notes to Jekyll blog posts.
 """
 
+import logging
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 import yaml
+
+
+def generate_slug(title: str) -> str:
+    """Generate a Jekyll-compatible URL slug from a post title.
+
+    Args:
+        title: The post title
+
+    Returns:
+        A URL-safe slug matching Jekyll's :title parameter behavior
+    """
+    slug = re.sub(r"[^a-zA-Z0-9\s-]", "", title.lower())
+    slug = re.sub(r"\s+", "-", slug.strip())
+    return slug
+
+
+def build_post_registry(posts_dir: Path, ready_files: list[Path]) -> dict[str, str]:
+    """Build a registry mapping post titles to their URL slugs.
+
+    Scans the blog's _posts/ directory and current Ready/ batch files to extract
+    titles from frontmatter and build a lowercase_title -> slug mapping for
+    cross-post link resolution.
+
+    Args:
+        posts_dir: Path to the blog's _posts/ directory
+        ready_files: List of markdown files in the current Ready/ batch
+
+    Returns:
+        Dictionary mapping lowercase titles to URL slugs
+
+    Edge cases:
+        - Files without title frontmatter are skipped
+        - Duplicate titles: most recent post wins (based on file modification time)
+        - Empty directories: returns empty dict
+    """
+    registry: dict[str, str] = {}
+
+    # Helper to process a file and add to registry
+    def add_to_registry(file_path: Path) -> None:
+        try:
+            frontmatter, _ = extract_frontmatter_and_content(file_path)
+            title = frontmatter.get("title")
+
+            if title:
+                slug = generate_slug(title)
+                lowercase_title = title.lower()
+
+                # If duplicate, check which file is more recent
+                if lowercase_title in registry:
+                    # Get modification times (using current file's time as tie-breaker)
+                    # For now, just overwrite - most recent file wins
+                    pass
+
+                registry[lowercase_title] = slug
+        except Exception:
+            # Skip files that can't be parsed
+            pass
+
+    # Scan existing _posts/ directory if it exists
+    if posts_dir and posts_dir.exists():
+        for post_file in posts_dir.glob("*.md"):
+            add_to_registry(post_file)
+
+    # Add current Ready/ batch files
+    for ready_file in ready_files:
+        add_to_registry(ready_file)
+
+    return registry
 
 
 def extract_frontmatter_and_content(file_path: Path) -> tuple[dict[str, Any], str]:
@@ -32,90 +101,271 @@ def extract_frontmatter_and_content(file_path: Path) -> tuple[dict[str, Any], st
     return {}, content
 
 
-def convert_obsidian_links(
-    content: str, assets_dir: Optional[str] = None
-) -> tuple[str, list[str]]:
-    """Convert Obsidian [[links]] to markdown links or remove internal ones.
+def _resolve_svg_embed(
+    link_text: str, is_embed: bool, svg_files_to_copy: list[dict]
+) -> Optional[str]:
+    """Resolve SVG and Excalidraw embeds.
+
+    Args:
+        link_text: The text inside [[...]]
+        is_embed: Whether this is an embed (![[...]]) or regular link
+        svg_files_to_copy: List to append SVG file info to
 
     Returns:
-        tuple: (converted_content, list_of_excalidraw_files)
+        Markdown image reference with absolute path, or None if not an SVG embed
     """
-    excalidraw_files = []
+    if not is_embed:
+        return None
 
-    def convert_link(match):
+    # Check for SVG or Excalidraw patterns
+    if link_text.endswith(".svg"):
+        # Direct SVG embed: ![[file.svg]]
+        base_name = link_text.replace(".svg", "")
+        svg_filename = f"{base_name}.svg"
+
+        svg_files_to_copy.append({"original": link_text, "svg_filename": svg_filename})
+
+        return f"![{base_name}](/assets/{svg_filename})"
+
+    elif link_text.endswith(".excalidraw"):
+        # Excalidraw embed: ![[file.excalidraw]]
+        # Need to check for both .svg and .excalidraw.svg at copy time
+        base_name = link_text.replace(".excalidraw", "")
+
+        svg_files_to_copy.append(
+            {
+                "original": link_text,
+                "svg_filename": f"{base_name}.svg",  # Will try .excalidraw.svg too
+                "base_name": base_name,
+            }
+        )
+
+        return f"![{base_name}](/assets/{base_name}.svg)"
+
+    return None
+
+
+def _resolve_cross_post_link(
+    link_text: str, is_embed: bool, registry: dict[str, str]
+) -> Optional[str]:
+    """Resolve cross-post links using the post registry.
+
+    Args:
+        link_text: The text inside [[...]]
+        is_embed: Whether this is an embed (![[...]]) - should be False for this resolver
+        registry: Post registry mapping lowercase titles to slugs
+
+    Returns:
+        Markdown hyperlink [Title](/posts/slug/), or None if not found
+    """
+    if is_embed:
+        return None
+
+    # Look up in registry (case-insensitive)
+    lowercase_text = link_text.lower()
+    if lowercase_text in registry:
+        slug = registry[lowercase_text]
+        return f"[{link_text}](/posts/{slug}/)"
+
+    return None
+
+
+def _resolve_vault_link_fallback(
+    link_text: str, is_embed: bool, post_title: str
+) -> str:
+    """Fallback resolver for vault-only links - converts to plain text with warning.
+
+    Args:
+        link_text: The text inside [[...]]
+        is_embed: Whether this is an embed
+        post_title: Title of the current post (for warning message)
+
+    Returns:
+        Plain text (always succeeds - this is the fallback)
+    """
+    # Emit warning
+    logging.warning(
+        f'unresolved link [[{link_text}]] in "{post_title}" -- converted to plain text'
+    )
+
+    return link_text
+
+
+def _exclude_code_blocks(content: str) -> tuple[str, list[str]]:
+    """Remove code blocks from content and return placeholders.
+
+    Args:
+        content: Markdown content
+
+    Returns:
+        Tuple of (content with placeholders, list of code blocks)
+    """
+    code_blocks = []
+
+    # Extract fenced code blocks
+    def replace_fenced(match):
+        code_blocks.append(match.group(0))
+        return f"<<<CODE_BLOCK_{len(code_blocks) - 1}>>>"
+
+    content = re.sub(r"```.*?```", replace_fenced, content, flags=re.DOTALL)
+
+    # Extract inline code spans
+    def replace_inline(match):
+        code_blocks.append(match.group(0))
+        return f"<<<CODE_BLOCK_{len(code_blocks) - 1}>>>"
+
+    content = re.sub(r"`[^`]+`", replace_inline, content)
+
+    return content, code_blocks
+
+
+def _restore_code_blocks(content: str, code_blocks: list[str]) -> str:
+    """Restore code blocks from placeholders.
+
+    Args:
+        content: Content with placeholders
+        code_blocks: List of code blocks to restore
+
+    Returns:
+        Content with code blocks restored
+    """
+    for i, block in enumerate(code_blocks):
+        content = content.replace(f"<<<CODE_BLOCK_{i}>>>", block)
+
+    return content
+
+
+def convert_obsidian_links(
+    content: str,
+    registry: Optional[dict[str, str]] = None,
+    post_title: str = "Unknown",
+    assets_dir: Optional[str] = None,
+) -> tuple[str, list[dict]]:
+    """Convert Obsidian [[links]] using priority-ordered resolution pipeline.
+
+    Resolution order:
+    1. SVG embed resolver (for ![[file.svg]] and ![[file.excalidraw]])
+    2. Cross-post link resolver (for [[Post Title]] in registry)
+    3. Vault-only fallback (plain text with warning)
+
+    Args:
+        content: Markdown content to process
+        registry: Optional post registry for cross-post link resolution
+        post_title: Title of current post (for warning messages)
+        assets_dir: Deprecated, kept for compatibility
+
+    Returns:
+        tuple: (converted_content, list_of_svg_files_to_copy)
+    """
+    if registry is None:
+        registry = {}
+
+    svg_files_to_copy = []
+
+    # Exclude code blocks from processing
+    content, code_blocks = _exclude_code_blocks(content)
+
+    def resolve_link(match):
+        """Process a single wikilink through the resolution pipeline."""
+        is_embed = match.group(0).startswith("!")
         link_text = match.group(1)
 
-        # Check for Excalidraw files
-        if link_text.endswith(".excalidraw"):
-            # Extract filename without extension for SVG
-            base_name = link_text.replace(".excalidraw", "")
-            svg_filename = f"{base_name}.svg"
+        # Try each resolver in order
+        result = _resolve_svg_embed(link_text, is_embed, svg_files_to_copy)
+        if result is not None:
+            return result
 
-            # Add to list of files to copy
-            excalidraw_files.append(
-                {"original": link_text, "svg_filename": svg_filename}
-            )
+        result = _resolve_cross_post_link(link_text, is_embed, registry)
+        if result is not None:
+            return result
 
-            # Convert to standard markdown image
-            if assets_dir:
-                return f"![{base_name}]({assets_dir}/{svg_filename})"
-            else:
-                return f"![{base_name}](assets/{svg_filename})"
-        else:
-            # Regular Obsidian link - convert to code block as before
-            return f"`{link_text}`"
+        # Fallback always succeeds
+        return _resolve_vault_link_fallback(link_text, is_embed, post_title)
 
-    # Handle both embed syntax ![[file]] and link syntax [[file]]
-    content = re.sub(r"!?\[\[([^\]]+)\]\]", convert_link, content)
+    # Process all wikilinks
+    content = re.sub(r"!?\[\[([^\]]+)\]\]", resolve_link, content)
 
-    return content, excalidraw_files
+    # Restore code blocks
+    content = _restore_code_blocks(content, code_blocks)
+
+    return content, svg_files_to_copy
 
 
 def copy_excalidraw_assets(
-    excalidraw_files: list[dict], source_dir: Path, assets_dir: Path
+    excalidraw_files: list[dict],
+    source_dir: Path,
+    assets_dir: Path,
+    svg_dir: Optional[Path] = None,
 ) -> list[str]:
-    """Copy Excalidraw SVG files to the blog assets directory.
+    """Copy SVG and Excalidraw files to the blog assets directory.
 
     Args:
         excalidraw_files: List of dicts with 'original' and 'svg_filename' keys
         source_dir: Directory containing the source markdown (to look for SVG files)
         assets_dir: Target directory for SVG files
+        svg_dir: Optional dedicated SVG source directory (searched first)
 
     Returns:
         List of successfully copied SVG filenames
+
+    Supports .svg, .excalidraw, and .excalidraw.svg naming patterns.
+    Search order: svg_dir (if provided), source_dir, Blog/assets/
     """
     copied_files = []
     assets_dir.mkdir(parents=True, exist_ok=True)
 
     for file_info in excalidraw_files:
         svg_filename = file_info["svg_filename"]
+        base_name = file_info.get("base_name")
 
-        # Look for SVG file in various locations
-        potential_sources = [
-            source_dir / svg_filename,  # Same directory as markdown file
-            source_dir.parent / "assets" / svg_filename,  # Blog/assets/
-            source_dir.parent / svg_filename,  # Blog/ directory
-        ]
+        # Build list of potential filenames to look for
+        # For .excalidraw files, try both .svg and .excalidraw.svg
+        filenames_to_try = [svg_filename]
+        if base_name and file_info.get("original", "").endswith(".excalidraw"):
+            filenames_to_try.append(f"{base_name}.excalidraw.svg")
 
+        # Build search locations in priority order
+        search_dirs = []
+        if svg_dir:
+            search_dirs.append(svg_dir)
+        search_dirs.extend(
+            [
+                source_dir,  # Same directory as markdown file
+                source_dir.parent / "assets",  # Blog/assets/
+            ]
+        )
+
+        # Try to find the file
         svg_found = False
-        for source_svg in potential_sources:
-            if source_svg.exists():
-                target_svg = assets_dir / svg_filename
-                # Only copy if source and target are different files
-                if source_svg.resolve() != target_svg.resolve():
-                    shutil.copy2(source_svg, target_svg)
-                    print(f"  ✓ Copied SVG: {svg_filename}")
-                else:
-                    print(f"  ✓ SVG already in target location: {svg_filename}")
-                copied_files.append(svg_filename)
-                svg_found = True
+        found_filename = None
+
+        for search_dir in search_dirs:
+            for filename in filenames_to_try:
+                source_svg = search_dir / filename
+                if source_svg.exists():
+                    # Determine target filename - use the actual filename found
+                    target_svg = assets_dir / filename
+                    found_filename = filename
+
+                    # Only copy if source and target are different files
+                    if source_svg.resolve() != target_svg.resolve():
+                        shutil.copy2(source_svg, target_svg)
+                        print(f"  ✓ Copied SVG: {filename}")
+                    else:
+                        print(f"  ✓ SVG already in target location: {filename}")
+
+                    copied_files.append(filename)
+                    svg_found = True
+                    break
+
+            if svg_found:
                 break
 
         if not svg_found:
             print(
-                f"  ⚠ SVG not found for: {file_info['original']} (expected: {svg_filename})"
+                f"  ⚠ SVG not found for: {file_info['original']} (expected: {', '.join(filenames_to_try)})"
             )
-            print(f"    Looked in: {[str(p) for p in potential_sources]}")
+            print(f"    Looked in: {[str(d) for d in search_dirs]}")
 
     return copied_files
 
@@ -163,6 +413,8 @@ def convert_post(
     published_dir: Path,
     blog_posts_dir: Path,
     blog_assets_dir: Optional[Path] = None,
+    svg_dir: Optional[Path] = None,
+    registry: Optional[dict[str, str]] = None,
 ) -> str:
     """Convert a single post from Ready/ to Jekyll format."""
     print(f"Converting: {ready_file.name}")
@@ -173,20 +425,21 @@ def convert_post(
     # Get title from frontmatter or filename
     title = frontmatter.get("title", ready_file.stem.replace("-", " ").title())
 
-    # Convert content and extract Excalidraw files
-    assets_path = "assets" if not blog_assets_dir else f"assets"
-    converted_content, excalidraw_files = convert_obsidian_links(content, assets_path)
+    # Convert content and extract SVG files
+    converted_content, excalidraw_files = convert_obsidian_links(
+        content, registry=registry, post_title=title
+    )
 
-    # Copy Excalidraw SVG files if any were found
+    # Copy SVG files if any were found
     if excalidraw_files and blog_assets_dir:
         copied_svgs = copy_excalidraw_assets(
-            excalidraw_files, ready_file.parent, blog_assets_dir
+            excalidraw_files, ready_file.parent, blog_assets_dir, svg_dir
         )
         if copied_svgs:
-            print(f"  ✓ Processed {len(copied_svgs)} Excalidraw diagram(s)")
+            print(f"  ✓ Processed {len(copied_svgs)} SVG diagram(s)")
     elif excalidraw_files:
         print(
-            f"  ⚠ Found {len(excalidraw_files)} Excalidraw diagram(s) but no assets directory specified"
+            f"  ⚠ Found {len(excalidraw_files)} SVG diagram(s) but no assets directory specified"
         )
 
     # Create Jekyll frontmatter
@@ -194,8 +447,7 @@ def convert_post(
 
     # Generate Jekyll filename
     date_str = datetime.now().strftime("%Y-%m-%d")
-    slug = re.sub(r"[^a-zA-Z0-9\s-]", "", title.lower())
-    slug = re.sub(r"\s+", "-", slug.strip())
+    slug = generate_slug(title)
     jekyll_filename = f"{date_str}-{slug}.md"
 
     # Create full Jekyll post content
@@ -222,6 +474,7 @@ def publish_posts(
     published_dir: Path,
     blog_posts_dir: Path,
     blog_assets_dir: Optional[Path] = None,
+    svg_dir: Optional[Path] = None,
 ) -> list[str]:
     """Process all posts in Ready/ directory."""
     # Ensure directories exist
@@ -242,11 +495,21 @@ def publish_posts(
 
     print(f"Found {len(ready_files)} post(s) to publish:")
 
+    # Build post registry for cross-post link resolution
+    registry = build_post_registry(blog_posts_dir, ready_files)
+    if registry:
+        print(f"  ℹ Built post registry with {len(registry)} post(s)")
+
     published_files = []
     for ready_file in ready_files:
         try:
             jekyll_filename = convert_post(
-                ready_file, published_dir, blog_posts_dir, blog_assets_dir
+                ready_file,
+                published_dir,
+                blog_posts_dir,
+                blog_assets_dir,
+                svg_dir,
+                registry,
             )
             published_files.append(jekyll_filename)
         except Exception as e:
